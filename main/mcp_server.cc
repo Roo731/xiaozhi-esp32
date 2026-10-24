@@ -1,6 +1,5 @@
-
 /*
- * MCP Server Implementation - (XiaoZhi AI + OV3660 Camera + Servo Gate + Status LED )
+ * MCP Server Implementation - (XiaoZhi AI + OV3660 Camera + Servo Gate)
  */
 
 #include "mcp_server.h"
@@ -27,7 +26,6 @@
 
 #define TAG "MCP"
 
-// ==================== SERVO MOTOR CONFIGURATION (GPIO 21) ====================
 #define SERVO_PIN         21          
 #define SERVO_LEDC_CHANNEL LEDC_CHANNEL_1
 #define SERVO_LEDC_TIMER   LEDC_TIMER_1
@@ -70,7 +68,7 @@ void InitServo() {
     SetServoAngle(0);
 }
 
-// ==================== OV3660 CAMERA PIN CONFIGURATION ====================
+// ==================== OV3660 कैमरा पिन कॉन्फ़िगरेशन ====================
 #define PWDN_GPIO_NUM     -1
 #define RESET_GPIO_NUM    -1
 #define XCLK_GPIO_NUM     15
@@ -254,7 +252,7 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
     });
 }
 
-// ==================== ANIMA 6 BOARD 1 ESP-NOW & ASSISTANT MODE ====================
+// ==================== एनिमा ESP-NOW और असिस्टेंट मोड ====================
 static const char* ANIMA_TAG = "ANIMA_BOARD1";
 static uint8_t board2_mac[6] = {0x28, 0x84, 0x85, 0x8A, 0x71, 0x28};
 static bool g_assistant_mode_active = true;
@@ -279,29 +277,17 @@ void SendAnimaCommand(const char* action_cmd) {
     esp_now_send(board2_mac, (uint8_t *)packet, strlen(packet));
 }
 
-// Wi-Fi कनेक्शन स्टेटस + RGB LED ब्लिंकिंग
+// Wi-Fi कनेक्शन स्टेटस टास्क (ESP-IDF कंपेटिबल)
 static void WiFiStatusTask(void* pvParameters) {
     wifi_ap_record_t ap_info;
     char wifi_packet[64];
 
     while (1) {
         if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
-            #ifdef RGB_BUILTIN
-                neopixelWrite(RGB_BUILTIN, 0, 0, 0); // कनेक्ट होते ही एलईडी बंद
-            #endif
             int rssi = ap_info.rssi;
             int quality = (rssi <= -100) ? 0 : (rssi >= -50 ? 100 : 2 * (rssi + 100));
             snprintf(wifi_packet, sizeof(wifi_packet), "WIFI:CON:%d:%d%%", rssi, quality);
         } else {
-            #ifdef RGB_BUILTIN
-                static bool ledState = false;
-                ledState = !ledState;
-                if (ledState) {
-                    neopixelWrite(RGB_BUILTIN, 0, 0, 150); // कनेक्ट न होने पर ब्लू ब्लिंक
-                } else {
-                    neopixelWrite(RGB_BUILTIN, 0, 0, 0);
-                }
-            #endif
             snprintf(wifi_packet, sizeof(wifi_packet), "WIFI:DIS");
         }
 
@@ -359,13 +345,13 @@ void Anima_ESPNow_Init() {
     xTaskCreate(WiFiStatusTask, "wifi_status_task", 3072, NULL, 5, NULL);
 }
 
-// ==================== MCP TOOL REGISTRATION ====================
+// ==================== MCP टूल रजिस्ट्रेशन ====================
 void RegisterAnimaBodyControl(McpServer* server) {
     InitServo();           
     Anima_ESPNow_Init();   
     Anima_Camera_Init();   
 
-    // 1. एनिमा बॉडी मूवमेंट कमांड्स (नमस्ते, हाथ उठाना, मुड़ना आदि पूरी लिस्ट के साथ)
+    // 1. एनिमा बॉडी मूवमेंट कमांड्स
     server->AddTool("control_anima_body", 
         "Control Anima 6 robot body movements and postures. Pass one of the following exact action strings in the 'action' parameter:\n"
         "- 'namaste': Fold hands together in front to greet/namaste\n"
