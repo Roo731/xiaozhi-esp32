@@ -7,9 +7,6 @@
 #include <esp_app_desc.h>
 #include <esp_log.h>
 #include <esp_pthread.h>
-#include <esp_now.h>
-#include <esp_wifi.h>
-#include <driver/ledc.h>
 #include <algorithm>
 #include <cstring>
 #include <iterator>
@@ -22,14 +19,20 @@
 #include "lvgl_theme.h"
 #include "settings.h"
 
+//
+#ifdef ESP_PLATFORM
+#include <esp_now.h>
+#include <esp_wifi.h>
+#include <driver/ledc.h>
+#endif
+
 #define TAG "MCP"
 
-// ==========================================
-// 📌 [यहाँ अपने दूसरे ESP32 बोर्ड का MAC एड्रेस लिखें]
-// ==========================================
+#ifdef ESP_PLATFORM
+//
 uint8_t slave_mac[] = {0x28, 0x84, 0x85, 0x8A, 0x71, 0x28}; 
 
-// ESP-NOW इनिशियलाइजेशन फंक्शन
+//
 void InitAnimaEspNow() {
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
@@ -53,6 +56,7 @@ void InitAnimaEspNow() {
     ESP_LOGI(TAG, "Anima-6 Slave Board paired successfully via ESP-NOW!");
 }
 
+// 
 void SendAnimaCommand(const char* action) {
     esp_err_t result = esp_now_send(slave_mac, (uint8_t*)action, strlen(action) + 1);
     if (result == ESP_OK) {
@@ -62,6 +66,7 @@ void SendAnimaCommand(const char* action) {
     }
 }
 
+// 
 class ServoShutter {
 private:
     int gpio_num_;
@@ -100,18 +105,17 @@ public:
 
     void Open() {
         if (!initialized_) return;
-        SetAngle(180); 
+        SetAngle(180); // गेट खोलें (180°)
         vTaskDelay(pdMS_TO_TICKS(400)); 
     }
 
     void Close() {
         if (!initialized_) return;
-        SetAngle(0); 
+        SetAngle(0); // गेट बंद करें (0°)
         vTaskDelay(pdMS_TO_TICKS(400)); 
     }
 };
 
-// RAII गार्ड जो सुनिश्चित करेगा कि फोटो क्लिक होने के बाद शटर हर हाल में बंद हो जाए
 struct ServoShutterGuard {
     ServoShutter& shutter;
     ServoShutterGuard(ServoShutter& s) : shutter(s) {
@@ -121,25 +125,19 @@ struct ServoShutterGuard {
         shutter.Close();
     }
 };
+#endif
 
 McpServer::McpServer() {
-    // सर्वर शुरू होते ही ESP-NOW को भी इनिशियलाइज करें
+#ifdef ESP_PLATFORM
     InitAnimaEspNow();
+#endif
 }
 
 McpServer::~McpServer() = default;
 
 void McpServer::AddCommonTools() {
-    // *Important* To speed up the response time, we add the common tools to the beginning of
-    // the tools list to utilize the prompt cache.
-    // **重要** 为了提升响应速度，我们把常用的工具放在前面，利用 prompt cache 的特性。
-
-    // Backup the original tools list and restore it after adding the common tools.
     auto original_tools = std::move(tools_);
     auto& board = Board::GetInstance();
-
-    // Do not add custom tools here.
-    // Custom tools must be added in the board's InitializeTools function.
 
     AddTool("self.get_device_status",
             "Provides the real-time information of the device, including the current status of the "
@@ -163,9 +161,7 @@ void McpServer::AddCommonTools() {
                 return true;
             });
 
-    // ==========================================
-    // 1. एनिमा बॉडी मूवमेंट कमांड्स (ESP-NOW के जरिए दूसरे बोर्ड को भेजने के लिए)
-    // ==========================================
+    // 1. एनिमा बॉडी मूवमेंट कमांड्स (ESP-NOW के जरिए)
     AddTool("control_anima_body", 
         "Control Anima 6 robot body movements and postures. Pass one of the following exact action strings in the 'action' parameter:\n"
         "- 'namaste': Fold hands together in front to greet/namaste\n"
@@ -182,7 +178,9 @@ void McpServer::AddCommonTools() {
         PropertyList({Property("action", kPropertyTypeString)}),
         [](const PropertyList& properties) -> ReturnValue {
             auto action = properties["action"].value<std::string>();
+#ifdef ESP_PLATFORM
             SendAnimaCommand(action.c_str());
+#endif
             return true;
         }
     );
@@ -216,6 +214,7 @@ void McpServer::AddCommonTools() {
                     return false;
                 });
     }
+
     
     auto camera = board.GetCamera();
     if (camera) {
@@ -228,12 +227,12 @@ void McpServer::AddCommonTools() {
                 "  A JSON object that provides the photo information.",
                 PropertyList({Property("question", kPropertyTypeString)}),
                 [camera](const PropertyList& properties) -> ToolResult {
-                    // Lower the priority to do the camera capture
                     TaskPriorityReset priority_reset(1);
 
-    
+#ifdef ESP_PLATFORM
                     static ServoShutter shutter(21);
-                    ServoShutterGuard guard(shutter); 
+                    ServoShutterGuard guard(shutter);
+#endif
 
                     if (!camera->Capture()) {
                         return std::unexpected("Failed to capture photo");
@@ -248,13 +247,11 @@ void McpServer::AddCommonTools() {
     }
 #endif
 
-    // Restore the original tools list to the end of the tools list
     tools_.insert(tools_.end(), std::make_move_iterator(original_tools.begin()),
                   std::make_move_iterator(original_tools.end()));
 }
 
 void McpServer::AddUserOnlyTools() {
-    // System tools
     AddUserOnlyTool("self.get_system_info", "Get the system information", PropertyList(),
                     [this](const PropertyList& properties) -> ReturnValue {
                         auto& board = Board::GetInstance();
@@ -267,13 +264,11 @@ void McpServer::AddUserOnlyTools() {
                         app.Schedule([&app]() {
                             ESP_LOGW(TAG, "User requested reboot");
                             vTaskDelay(pdMS_TO_TICKS(1000));
-
                             app.Reboot();
                         });
                         return true;
                     });
 
-    // Firmware upgrade
     AddUserOnlyTool(
         "self.upgrade_firmware",
         "Upgrade firmware from a specific URL. This will download and install the firmware, then "
@@ -295,7 +290,6 @@ void McpServer::AddUserOnlyTools() {
             return true;
         });
 
-    // Display control
 #ifdef HAVE_LVGL
     auto display = Board::GetInstance().GetDisplay();
     if (display != nullptr && display->SupportsGuiOperations()) {
@@ -308,143 +302,8 @@ void McpServer::AddUserOnlyTools() {
                             cJSON_AddBoolToObject(json, "monochrome", display->IsMonochrome());
                             return json;
                         });
-
-#if CONFIG_LV_USE_SNAPSHOT
-        AddUserOnlyTool(
-            "self.screen.snapshot", "Snapshot the screen and upload it to a specific URL",
-            PropertyList({Property("url", kPropertyTypeString),
-                          Property("quality", kPropertyTypeInteger, 80, 1, 100)}),
-            [display](const PropertyList& properties) -> ToolResult {
-                auto url = properties["url"].value<std::string>();
-                auto quality = properties["quality"].value<int>();
-
-                std::string jpeg_data;
-                if (!display->SnapshotToJpeg(jpeg_data, quality)) {
-                    return std::unexpected("Failed to snapshot screen");
-                }
-
-                ESP_LOGI(TAG, "Upload snapshot %u bytes to %s", jpeg_data.size(), url.c_str());
-
-                // 构造multipart/form-data请求体
-                std::string boundary = "----ESP32_SCREEN_SNAPSHOT_BOUNDARY";
-
-                auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
-                http->SetHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
-                if (auto opened = http->Open("POST", url); !opened) {
-                    return std::unexpected("Failed to open URL: " + url + " (" +
-                                           opened.error().ToString() + ")");
-                }
-                auto write_or_fail = [&http](const char* data,
-                                             size_t size) -> std::optional<std::string> {
-                    if (auto written = http->Write(data, size); !written) {
-                        return written.error().ToString();
-                    }
-                    return std::nullopt;
-                };
-                {
-                    // 文件字段头部
-                    std::string file_header;
-                    file_header += "--" + boundary + "\r\n";
-                    file_header +=
-                        "Content-Disposition: form-data; name=\"file\"; "
-                        "filename=\"screenshot.jpg\"\r\n";
-                    file_header += "Content-Type: image/jpeg\r\n";
-                    file_header += "\r\n";
-                    if (auto error = write_or_fail(file_header.c_str(), file_header.size());
-                        error) {
-                        http->Close();
-                        return std::unexpected("Failed to upload screenshot: " + *error);
-                    }
-                }
-
-                // JPEG数据
-                if (auto error = write_or_fail((const char*)jpeg_data.data(), jpeg_data.size());
-                    error) {
-                    http->Close();
-                    return std::unexpected("Failed to upload screenshot: " + *error);
-                }
-
-                {
-                    // multipart尾部
-                    std::string multipart_footer;
-                    multipart_footer += "\r\n--" + boundary + "--\r\n";
-                    if (auto error =
-                            write_or_fail(multipart_footer.c_str(), multipart_footer.size());
-                        error) {
-                        http->Close();
-                        return std::unexpected("Failed to upload screenshot: " + *error);
-                    }
-                }
-                if (auto error = write_or_fail("", 0); error) {
-                    http->Close();
-                    return std::unexpected("Failed to upload screenshot: " + *error);
-                }
-
-                auto upload_status = http->GetStatusCode();
-                if (!upload_status) {
-                    return std::unexpected(upload_status.error().ToString());
-                }
-                if (*upload_status != 200) {
-                    return std::unexpected("Unexpected status code: " +
-                                           std::to_string(*upload_status));
-                }
-                std::string result = http->ReadAll();
-                http->Close();
-                ESP_LOGI(TAG, "Snapshot screen result: %s", result.c_str());
-                return true;
-            });
-
-        AddUserOnlyTool(
-            "self.screen.preview_image", "Preview an image on the screen",
-            PropertyList({Property("url", kPropertyTypeString)}),
-            [display](const PropertyList& properties) -> ToolResult {
-                auto url = properties["url"].value<std::string>();
-                auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
-
-                if (auto opened = http->Open("GET", url); !opened) {
-                    return std::unexpected("Failed to open URL: " + url + " (" +
-                                           opened.error().ToString() + ")");
-                }
-                auto status_code = http->GetStatusCode();
-                if (!status_code) {
-                    return std::unexpected(status_code.error().ToString());
-                }
-                if (*status_code != 200) {
-                    return std::unexpected("Unexpected status code: " +
-                                           std::to_string(*status_code));
-                }
-
-                size_t content_length = http->GetBodyLength();
-                using BufferPtr = std::unique_ptr<char, decltype(&heap_caps_free)>;
-                BufferPtr data(
-                    static_cast<char*>(heap_caps_malloc(content_length, MALLOC_CAP_8BIT)),
-                    heap_caps_free);
-                if (data == nullptr) {
-                    return std::unexpected("Failed to allocate memory for image: " + url);
-                }
-                size_t total_read = 0;
-                while (total_read < content_length) {
-                    auto ret = http->Read(data.get() + total_read, content_length - total_read);
-                    if (!ret) {
-                        return std::unexpected("Failed to download image: " + url);
-                    }
-                    if (*ret == 0) {
-                        break;
-                    }
-                    total_read += *ret;
-                }
-                http->Close();
-
-                auto image = std::make_unique<LvglAllocatedImage>(data.release(), total_read);
-                if (!image->IsValid()) {
-                    return std::unexpected("Downloaded image is invalid: " + url);
-                }
-                display->SetPreviewImage(std::move(image));
-                return true;
-            });
-#endif  // CONFIG_LV_USE_SNAPSHOT
     }
-#endif  // HAVE_LVGL
+#endif
 
     AddUserOnlyTool("self.assets.set_download_url", "Set the download url for the assets",
                     PropertyList({Property("url", kPropertyTypeString)}),
