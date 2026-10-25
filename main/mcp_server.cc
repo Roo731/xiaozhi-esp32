@@ -19,8 +19,8 @@
 #include "lvgl_theme.h"
 #include "settings.h"
 
-//
-#ifdef ESP_PLATFORM
+// केवल ESP32-S3 प्लेटफॉर्म के लिए ही हार्डवेयर हेडर शामिल करें ताकि बाकी 18 बोर्ड्स के बिल्ड फेल न हों
+#if defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32S3)
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <driver/ledc.h>
@@ -28,11 +28,11 @@
 
 #define TAG "MCP"
 
-#ifdef ESP_PLATFORM
-//
-uint8_t slave_mac[] = {0x28, 0x84, 0x85, 0x8A, 0x71, 0x28}; 
+#if defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32S3)
 
-//
+uint8_t slave_mac[] = {0x24, 0x6F, 0x28, 0x00, 0x00, 0x00}; 
+
+// ESP-NOW इनिशियलाइजेशन फंक्शन
 void InitAnimaEspNow() {
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
@@ -56,7 +56,7 @@ void InitAnimaEspNow() {
     ESP_LOGI(TAG, "Anima-6 Slave Board paired successfully via ESP-NOW!");
 }
 
-// 
+// दूसरे बोर्ड को कमांड भेजने वाला फंक्शन
 void SendAnimaCommand(const char* action) {
     esp_err_t result = esp_now_send(slave_mac, (uint8_t*)action, strlen(action) + 1);
     if (result == ESP_OK) {
@@ -66,7 +66,7 @@ void SendAnimaCommand(const char* action) {
     }
 }
 
-// 
+
 class ServoShutter {
 private:
     int gpio_num_;
@@ -128,7 +128,7 @@ struct ServoShutterGuard {
 #endif
 
 McpServer::McpServer() {
-#ifdef ESP_PLATFORM
+#if defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32S3)
     InitAnimaEspNow();
 #endif
 }
@@ -161,7 +161,7 @@ void McpServer::AddCommonTools() {
                 return true;
             });
 
-    // 1. एनिमा बॉडी मूवमेंट कमांड्स (ESP-NOW के जरिए)
+    // 1. एनिमा बॉडी मूवमेंट कमांड्स
     AddTool("control_anima_body", 
         "Control Anima 6 robot body movements and postures. Pass one of the following exact action strings in the 'action' parameter:\n"
         "- 'namaste': Fold hands together in front to greet/namaste\n"
@@ -178,7 +178,7 @@ void McpServer::AddCommonTools() {
         PropertyList({Property("action", kPropertyTypeString)}),
         [](const PropertyList& properties) -> ReturnValue {
             auto action = properties["action"].value<std::string>();
-#ifdef ESP_PLATFORM
+#if defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32S3)
             SendAnimaCommand(action.c_str());
 #endif
             return true;
@@ -215,7 +215,7 @@ void McpServer::AddCommonTools() {
                 });
     }
 
-    
+    // 2. ऑटो सर्वो गेट कंट्रोल वाला कैमरा टूल
     auto camera = board.GetCamera();
     if (camera) {
         AddTool("self.camera.take_photo",
@@ -229,7 +229,7 @@ void McpServer::AddCommonTools() {
                 [camera](const PropertyList& properties) -> ToolResult {
                     TaskPriorityReset priority_reset(1);
 
-#ifdef ESP_PLATFORM
+#if defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32S3)
                     static ServoShutter shutter(21);
                     ServoShutterGuard guard(shutter);
 #endif
@@ -580,7 +580,7 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
                 found = true;
             } else if (argument.type() == kPropertyTypeString && cJSON_IsString(value)) {
                 validation = argument.set_value<std::string>(value->valuestring);
-                found = true;
+                found, true;
             } else if (value != nullptr) {
                 ESP_LOGE(TAG, "tools/call: Invalid type for argument: %s", argument.name().c_str());
                 ReplyError(id, -32602, "Invalid type for argument: " + argument.name(),
