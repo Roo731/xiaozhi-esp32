@@ -25,7 +25,7 @@
 #define TAG "MCP"
 
 #if defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32S3)
-// 📌 आपका दिया गया असली मैक एड्रेस
+
 uint8_t slave_mac[] = {0x28, 0x84, 0x85, 0x8A, 0x71, 0x28}; 
 
 // ESP-NOW इनिशियलाइजेशन फंक्शन
