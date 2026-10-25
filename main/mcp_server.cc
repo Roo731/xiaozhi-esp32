@@ -62,7 +62,6 @@ void SendAnimaCommand(const char* action) {
     }
 }
 
-// 
 class ServoShutter {
 private:
     int gpio_num_;
@@ -85,14 +84,14 @@ public:
         };
         if (ledc_timer_config(&ledc_timer) != ESP_OK) return;
 
+        // यहाँ से .h_output_en को हटा दिया गया है
         ledc_channel_config_t ledc_channel = {
             .gpio_num       = gpio_num_,
             .speed_mode     = LEDC_LOW_SPEED_MODE,
             .channel        = LEDC_CHANNEL_0,
             .intr_type      = LEDC_INTR_DISABLE,
             .timer_sel      = LEDC_TIMER_0,
-            .duty           = 0,
-            .h_output_en    = 0
+            .duty           = 0
         };
         if (ledc_channel_config(&ledc_channel) == ESP_OK) {
             initialized_ = true;
