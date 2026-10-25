@@ -25,7 +25,7 @@
 #define TAG "MCP"
 
 #if defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32S3)
-
+// 📌 आपका दिया गया असली मैक एड्रेस
 uint8_t slave_mac[] = {0x28, 0x84, 0x85, 0x8A, 0x71, 0x28}; 
 
 // ESP-NOW इनिशियलाइजेशन फंक्शन
@@ -62,6 +62,7 @@ void SendAnimaCommand(const char* action) {
     }
 }
 
+// 📌 GPIO 21 के लिए सर्वो मोटर शटर क्लास (कैमरा गेट) - h_output_en एरर हटाया गया
 class ServoShutter {
 private:
     int gpio_num_;
@@ -84,7 +85,6 @@ public:
         };
         if (ledc_timer_config(&ledc_timer) != ESP_OK) return;
 
-        // यहाँ से .h_output_en को हटा दिया गया है
         ledc_channel_config_t ledc_channel = {
             .gpio_num       = gpio_num_,
             .speed_mode     = LEDC_LOW_SPEED_MODE,
@@ -150,7 +150,7 @@ void McpServer::AddCommonTools() {
                 return true;
             });
 
-    // 1. एनिमा बॉडी मूवमेंट कमांड्स (ESP-NOW के जरिए)
+    // 1. एनिमा बॉडी मूवमेंट कमांड्स (ESP-NOW के जरिए दूसरे बोर्ड को भेजने के लिए)
     AddTool("control_anima_body", 
         "Control Anima 6 robot body movements and postures. Pass one action string in 'action': "
         "namaste, raise_right_hand, raise_left_hand, turn_left, turn_right, look_up, look_down, "
@@ -165,7 +165,7 @@ void McpServer::AddCommonTools() {
         }
     );
 
-    // कैमरा टूल (सर्वो शटर गेट के साथ)
+    // 2. ऑटो सर्वो गेट कंट्रोल वाला कैमरा टूल
     auto camera = board.GetCamera();
     if (camera) {
         AddTool("self.camera.take_photo",
@@ -300,6 +300,7 @@ void McpServer::SendResponse(const std::string& payload, const ResponseSender& r
     }
 }
 
+void McpServer::ReplyResult(id, const std::string& result, const ResponseSender& response_sender) {} // Handled inline below
 void McpServer::ReplyResult(int id, const std::string& result, const ResponseSender& response_sender) {
     std::string payload = "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) + ",\"result\":" + result + "}";
     SendResponse(payload, response_sender);
