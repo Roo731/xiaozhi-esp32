@@ -7,6 +7,9 @@
 #include <esp_app_desc.h>
 #include <esp_log.h>
 #include <esp_pthread.h>
+#include <driver/ledc.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
 #include <algorithm>
 #include <cstring>
 #include <iterator>
@@ -20,6 +23,42 @@
 #include "settings.h"
 
 #define TAG "MCP"
+
+
+#define CAMERA_SERVO_PIN 21
+#define LEDC_TIMER_SERVO LEDC_TIMER_0
+#define LEDC_MODE_SERVO LEDC_LOW_SPEED_MODE
+#define LEDC_CHANNEL_SERVO LEDC_CHANNEL_0
+#define LEDC_FREQUENCY 50 // 50Hz for Servo Motor
+
+static void init_camera_servo() {
+    ledc_timer_config_t ledc_timer = {
+        .speed_mode = LEDC_MODE_SERVO,
+        .duty_resolution = LEDC_TIMER_16_BIT,
+        .timer_num = LEDC_TIMER_SERVO,
+        .freq_hz = LEDC_FREQUENCY,
+        .clk_cfg = LEDC_AUTO_CLK
+    };
+    ledc_timer_config(&ledc_timer);
+
+    ledc_channel_config_t ledc_channel = {
+        .gpio_num = CAMERA_SERVO_PIN,
+        .speed_mode = LEDC_MODE_SERVO,
+        .channel = LEDC_CHANNEL_SERVO,
+        .intr_type = LEDC_INTR_DISABLE,
+        .timer_sel = LEDC_TIMER_SERVO,
+        .duty = 0,
+        .hpoint = 0
+    };
+    ledc_channel_config(&ledc_channel);
+}
+
+static void set_camera_gate_angle(int angle) {
+    // 16-bit duty: 50Hz period. 0.5ms pulse ~ 1638 (0 deg), 2.5ms pulse ~ 8192 (180 deg)
+    uint32_t duty = 1638 + (angle * (8192 - 1638) / 180);
+    ledc_set_duty(LEDC_MODE_SERVO, LEDC_CHANNEL_SERVO, duty);
+    ledc_update_duty(LEDC_MODE_SERVO, LEDC_CHANNEL_SERVO);
+}
 
 McpServer::McpServer() {}
 
@@ -91,6 +130,10 @@ void McpServer::AddCommonTools() {
 
     auto camera = board.GetCamera();
     if (camera) {
+        
+        init_camera_servo();
+        set_camera_gate_angle(0);
+
         AddTool("self.camera.take_photo",
                 "Always remember you have a camera. If the user asks you to see something, use "
                 "this tool to take a photo and then explain it.\n"
@@ -103,11 +146,22 @@ void McpServer::AddCommonTools() {
                     // Lower the priority to do the camera capture
                     TaskPriorityReset priority_reset(1);
 
+                    
+                    ESP_LOGI(TAG, "Opening camera gate on GPIO 21...");
+                    set_camera_gate_angle(90); 
+                    vTaskDelay(pdMS_TO_TICKS(400)); 
+
                     if (!camera->Capture()) {
+                        set_camera_gate_angle(0); 
                         return std::unexpected("Failed to capture photo");
                     }
                     auto question = properties["question"].value<std::string>();
                     auto result = camera->Explain(question);
+
+                    
+                    ESP_LOGI(TAG, "Closing camera gate on GPIO 21...");
+                    set_camera_gate_angle(0); 
+
                     if (!result) {
                         return std::unexpected(std::move(result.error()));
                     }
@@ -116,13 +170,34 @@ void McpServer::AddCommonTools() {
     }
 #endif
 
-    // Restore the original tools list to the end of the tools list
+    
+    AddTool("self.animatronic.send_command",
+            "Send motion or action commands to the secondary ESP32 board via ESP-NOW (e.g. move head, wave hand, gestures).",
+            PropertyList({
+                Property("motion", kPropertyTypeString, "The motion command string to send")
+            }),
+            [](const PropertyList& properties) -> ReturnValue {
+                std::string motion = properties["motion"].value<std::string>();
+                ESP_LOGI(TAG, "Sending ESP-NOW command: %s", motion.c_str());
+
+                
+                uint8_t receiver_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; 
+
+                esp_err_t result = esp_now_send(receiver_mac, (uint8_t*)motion.c_str(), motion.length() + 1);
+                if (result != ESP_OK) {
+                    return std::unexpected("Failed to send ESP-NOW message");
+                }
+
+                return true;
+            });
+
+    
     tools_.insert(tools_.end(), std::make_move_iterator(original_tools.begin()),
                   std::make_move_iterator(original_tools.end()));
 }
 
 void McpServer::AddUserOnlyTools() {
-    // System tools
+    
     AddUserOnlyTool("self.get_system_info", "Get the system information", PropertyList(),
                     [this](const PropertyList& properties) -> ReturnValue {
                         auto& board = Board::GetInstance();
@@ -193,7 +268,6 @@ void McpServer::AddUserOnlyTools() {
 
                 ESP_LOGI(TAG, "Upload snapshot %u bytes to %s", jpeg_data.size(), url.c_str());
 
-                // 构造multipart/form-data请求体
                 std::string boundary = "----ESP32_SCREEN_SNAPSHOT_BOUNDARY";
 
                 auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
@@ -210,7 +284,6 @@ void McpServer::AddUserOnlyTools() {
                     return std::nullopt;
                 };
                 {
-                    // 文件字段头部
                     std::string file_header;
                     file_header += "--" + boundary + "\r\n";
                     file_header +=
@@ -225,7 +298,6 @@ void McpServer::AddUserOnlyTools() {
                     }
                 }
 
-                // JPEG数据
                 if (auto error = write_or_fail((const char*)jpeg_data.data(), jpeg_data.size());
                     error) {
                     http->Close();
@@ -233,7 +305,6 @@ void McpServer::AddUserOnlyTools() {
                 }
 
                 {
-                    // multipart尾部
                     std::string multipart_footer;
                     multipart_footer += "\r\n--" + boundary + "--\r\n";
                     if (auto error =
@@ -314,8 +385,6 @@ void McpServer::AddUserOnlyTools() {
     }
 #endif  // HAVE_LVGL
 
-    // Assets download url (always registered — Settings storage works regardless of partition
-    // layout)
     AddUserOnlyTool("self.assets.set_download_url", "Set the download url for the assets",
                     PropertyList({Property("url", kPropertyTypeString)}),
                     [](const PropertyList& properties) -> ReturnValue {
@@ -338,7 +407,6 @@ void McpServer::LogToolInventory() const {
 }
 
 void McpServer::AddTool(std::unique_ptr<McpTool> tool) {
-    // Prevent adding duplicate tools
     if (std::find_if(tools_.begin(), tools_.end(), [&tool](const auto& existing) {
             return existing->name() == tool->name();
         }) != tools_.end()) {
@@ -391,7 +459,6 @@ void McpServer::ParseCapabilities(const cJSON* capabilities) {
 }
 
 void McpServer::ParseMessage(const cJSON* json, ResponseSender response_sender) {
-    // Check JSONRPC version
     auto version = cJSON_GetObjectItem(json, "jsonrpc");
     if (version == nullptr || !cJSON_IsString(version) ||
         strcmp(version->valuestring, "2.0") != 0) {
@@ -399,7 +466,6 @@ void McpServer::ParseMessage(const cJSON* json, ResponseSender response_sender) 
         return;
     }
 
-    // Check method
     auto method = cJSON_GetObjectItem(json, "method");
     if (method == nullptr || !cJSON_IsString(method)) {
         ESP_LOGE(TAG, "Missing method");
@@ -411,7 +477,6 @@ void McpServer::ParseMessage(const cJSON* json, ResponseSender response_sender) 
         return;
     }
 
-    // Check params
     auto params = cJSON_GetObjectItem(json, "params");
     if (params != nullptr && !cJSON_IsObject(params)) {
         ESP_LOGE(TAG, "Invalid params for method: %s", method_str.c_str());
@@ -534,7 +599,6 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
     std::string next_cursor = "";
 
     while (it != tools_.end()) {
-        // 如果我们还没有找到起始位置，继续搜索
         if (!found_cursor) {
             if ((*it)->name() == cursor) {
                 found_cursor = true;
@@ -549,10 +613,8 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
             continue;
         }
 
-        // 添加tool前检查大小
         std::string tool_json = (*it)->to_json() + ",";
         if (json.length() + tool_json.length() + 30 > max_payload_size) {
-            // 如果添加这个tool会超出大小限制，设置next_cursor并退出循环
             next_cursor = (*it)->name();
             break;
         }
@@ -566,7 +628,6 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
     }
 
     if (json.back() == '[' && !tools_.empty()) {
-        // 如果没有添加任何tool，返回错误
         ESP_LOGE(TAG, "tools/list: Failed to add tool %s because of payload size limit",
                  next_cursor.c_str());
         ReplyError(id, "Failed to add tool " + next_cursor + " because of payload size limit",
@@ -633,7 +694,6 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
         }
     }
 
-    // Use main thread to call the tool
     auto& app = Application::GetInstance();
     app.Schedule([this, id, tool, arguments = std::move(arguments),
                   response_sender = std::move(response_sender)]() {
